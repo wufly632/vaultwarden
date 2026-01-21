@@ -194,7 +194,7 @@ jobs:
       # Upload to release if this is a tag push
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@7a02522b4b4c55986c6b6c1bd9b7fc20e5f57b8e # v2.2.1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             release/*.tar.gz
@@ -253,7 +253,7 @@ jobs:
 
       - name: Update release with notes
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@7a02522b4b4c55986c6b6c1bd9b7fc20e5f57b8e # v2.2.1
+        uses: softprops/action-gh-release@v2
         with:
           body_path: release_notes.md
           append_body: true
