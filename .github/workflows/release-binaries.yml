@@ -30,12 +30,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux targets - native build with all databases
+          # Linux x86_64 - SQLite only (most common, no extra dependencies)
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            cross: false
+            features: sqlite
+            artifact_name: vaultwarden-linux-x86_64-gnu
+
+          # Linux x86_64 - Full database support (requires MariaDB/PostgreSQL libs)
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             cross: false
             features: sqlite,mysql,postgresql
-            artifact_name: vaultwarden-linux-x86_64-gnu
+            artifact_name: vaultwarden-linux-x86_64-gnu-full
 
           # Linux cross-compiled targets - SQLite only (simpler dependencies)
           - os: ubuntu-24.04
