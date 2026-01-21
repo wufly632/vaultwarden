@@ -30,61 +30,62 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux targets
+          # Linux targets - native build with all databases
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             cross: false
             features: sqlite,mysql,postgresql
             artifact_name: vaultwarden-linux-x86_64-gnu
 
+          # Linux cross-compiled targets - SQLite only (simpler dependencies)
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cross: true
-            features: sqlite,mysql,postgresql,enable_mimalloc
+            features: sqlite,enable_mimalloc
             artifact_name: vaultwarden-linux-x86_64-musl
 
           - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             cross: true
-            features: sqlite,mysql,postgresql
+            features: sqlite
             artifact_name: vaultwarden-linux-aarch64-gnu
 
           - os: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             cross: true
-            features: sqlite,mysql,postgresql,enable_mimalloc
+            features: sqlite,enable_mimalloc
             artifact_name: vaultwarden-linux-aarch64-musl
 
           - os: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             cross: true
-            features: sqlite,postgresql
+            features: sqlite
             artifact_name: vaultwarden-linux-armv7-gnueabihf
 
           - os: ubuntu-24.04
             target: arm-unknown-linux-gnueabihf
             cross: true
-            features: sqlite,postgresql
+            features: sqlite
             artifact_name: vaultwarden-linux-armv6-gnueabihf
 
-          # macOS targets
+          # macOS targets - SQLite only (avoid MySQL linking issues)
           - os: macos-14
             target: x86_64-apple-darwin
-            cross: false
-            features: sqlite,mysql,postgresql
+            cross: true
+            features: sqlite
             artifact_name: vaultwarden-macos-x86_64
 
           - os: macos-14
             target: aarch64-apple-darwin
             cross: false
-            features: sqlite,mysql,postgresql
+            features: sqlite
             artifact_name: vaultwarden-macos-aarch64
 
-          # Windows targets
+          # Windows target - SQLite only
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             cross: false
-            features: sqlite,mysql,postgresql
+            features: sqlite
             artifact_name: vaultwarden-windows-x86_64.exe
 
     steps:
@@ -106,18 +107,12 @@ jobs:
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
 
-      # Install dependencies for Linux
+      # Install dependencies for Linux native build (only x86_64-gnu needs MySQL/PostgreSQL)
       - name: Install Linux dependencies
-        if: runner.os == 'Linux' && !matrix.cross
+        if: runner.os == 'Linux' && !matrix.cross && contains(matrix.features, 'mysql')
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev-compat libpq-dev
-
-      # Install dependencies for macOS
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install mysql-client postgresql
 
       # Determine version
       - name: Determine version
