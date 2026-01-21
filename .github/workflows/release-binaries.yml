@@ -1,0 +1,261 @@
+name: Build and Release Binaries
+permissions: {}
+
+on:
+  release:
+    types: [created]
+  push:
+    tags:
+      - '[1-2].[0-9]+.[0-9]+'
+
+concurrency:
+  group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: write # Needed to upload release assets
+      attestations: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux targets
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            cross: false
+            features: sqlite,mysql,postgresql
+            artifact_name: vaultwarden-linux-x86_64-gnu
+
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            cross: true
+            features: sqlite,mysql,postgresql,enable_mimalloc
+            artifact_name: vaultwarden-linux-x86_64-musl
+
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            cross: true
+            features: sqlite,mysql,postgresql
+            artifact_name: vaultwarden-linux-aarch64-gnu
+
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
+            cross: true
+            features: sqlite,mysql,postgresql,enable_mimalloc
+            artifact_name: vaultwarden-linux-aarch64-musl
+
+          - os: ubuntu-24.04
+            target: armv7-unknown-linux-gnueabihf
+            cross: true
+            features: sqlite,postgresql
+            artifact_name: vaultwarden-linux-armv7-gnueabihf
+
+          - os: ubuntu-24.04
+            target: arm-unknown-linux-gnueabihf
+            cross: true
+            features: sqlite,postgresql
+            artifact_name: vaultwarden-linux-armv6-gnueabihf
+
+          # macOS targets
+          - os: macos-14
+            target: x86_64-apple-darwin
+            cross: false
+            features: sqlite,mysql,postgresql
+            artifact_name: vaultwarden-macos-x86_64
+
+          - os: macos-14
+            target: aarch64-apple-darwin
+            cross: false
+            features: sqlite,mysql,postgresql
+            artifact_name: vaultwarden-macos-aarch64
+
+          # Windows targets
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            cross: false
+            features: sqlite,mysql,postgresql
+            artifact_name: vaultwarden-windows-x86_64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+          targets: ${{ matrix.target }}
+
+      # Install cross-compilation tool if needed
+      - name: Install cross
+        if: matrix.cross
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      # Install dependencies for Linux
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux' && !matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev-compat libpq-dev
+
+      # Install dependencies for macOS
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install mysql-client postgresql
+
+      # Determine version
+      - name: Determine version
+        run: |
+          GIT_EXACT_TAG="$(git describe --tags --abbrev=0 --exact-match 2>/dev/null || true)"
+          if [[ -n "${GIT_EXACT_TAG}" ]]; then
+            echo "VERSION=${GIT_EXACT_TAG}" | tee -a "${GITHUB_ENV}"
+          else
+            GIT_LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0')"
+            GIT_REV="$(git rev-parse --short HEAD)"
+            echo "VERSION=${GIT_LAST_TAG}-${GIT_REV}" | tee -a "${GITHUB_ENV}"
+          fi
+
+      # Build with cargo or cross
+      - name: Build release binary
+        env:
+          FEATURES: ${{ matrix.features }}
+          TARGET: ${{ matrix.target }}
+          VW_VERSION: ${{ env.VERSION }}
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --target "${TARGET}" --features "${FEATURES}"
+          else
+            cargo build --release --target "${TARGET}" --features "${FEATURES}"
+          fi
+
+      # Prepare binary for upload
+      - name: Prepare binary
+        env:
+          TARGET: ${{ matrix.target }}
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+        run: |
+          mkdir -p release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${TARGET}/release/vaultwarden.exe" "release/${ARTIFACT_NAME}"
+          else
+            cp "target/${TARGET}/release/vaultwarden" "release/${ARTIFACT_NAME}"
+          fi
+
+          # Create checksum
+          cd release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            certutil -hashfile "${ARTIFACT_NAME}" SHA256 > "${ARTIFACT_NAME}.sha256"
+          else
+            sha256sum "${ARTIFACT_NAME}" > "${ARTIFACT_NAME}.sha256"
+          fi
+
+      # Compress binary
+      - name: Compress binary
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+        run: |
+          cd release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}" "${ARTIFACT_NAME}.sha256"
+          else
+            tar czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}" "${ARTIFACT_NAME}.sha256"
+          fi
+
+      # Attest binary
+      - name: Attest binary
+        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3.1.0
+        with:
+          subject-path: release/${{ matrix.artifact_name }}
+
+      # Upload as artifact for testing
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release/*
+          retention-days: 7
+
+      # Upload to release if this is a tag push
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@7a02522b4b4c55986c6b6c1bd9b7fc20e5f57b8e # v2.2.1
+        with:
+          files: |
+            release/*.tar.gz
+            release/*.zip
+            release/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-release-summary:
+    name: Create Release Summary
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+        with:
+          persist-credentials: false
+
+      - name: Generate release notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Vaultwarden ${GITHUB_REF_NAME}
+
+          ### Installation
+
+          #### Container Images
+          The recommended way to use Vaultwarden is via container images:
+          - `vaultwarden/server:latest` (Debian-based)
+          - `vaultwarden/server:alpine` (Alpine-based)
+
+          See the [Wiki](https://github.com/dani-garcia/vaultwarden/wiki) for detailed installation instructions.
+
+          #### Standalone Binaries
+          Standalone binaries are provided for advanced users. These require manual setup of:
+          - Web vault files
+          - Database configuration
+          - TLS/reverse proxy setup
+
+          **Available platforms:**
+          - Linux: x86_64 (glibc/musl), aarch64 (glibc/musl), armv7, armv6
+          - macOS: x86_64, aarch64 (Apple Silicon)
+          - Windows: x86_64
+
+          **Verify checksums:**
+          ```bash
+          sha256sum -c vaultwarden-*.sha256
+          ```
+
+          ### What's Changed
+          See the full changelog below.
+          EOF
+
+      - name: Update release with notes
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@7a02522b4b4c55986c6b6c1bd9b7fc20e5f57b8e # v2.2.1
+        with:
+          body_path: release_notes.md
+          append_body: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
